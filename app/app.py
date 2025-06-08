@@ -91,6 +91,7 @@ def logs(filename):
 
     logs = logs_dict[filename]
     if not logs:
+        print ("File not found or empty.")
         abort(404, description="File not found or empty.")
 
     # Group logs by docker_image

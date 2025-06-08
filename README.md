@@ -16,7 +16,7 @@
 
 <!-- paper . data and models . project page -->
 <p align="center">
-<a href="./assets/paper.pdf">📃 Paper</a>
+<a href="https://arxiv.org/abs/2504.07164">📃 Paper</a>
 •
 <a href="https://huggingface.co/R2E-Gym" >🤗 Data & Models</a>
 •
@@ -227,10 +227,10 @@ Please refer [ENV_GENERATION.md](docs/ENV_GENERATION.md) for details on SWE-GEN 
 ## 📚 Citation
 
 ```bibtex
-@misc{jain2025r2e-gym,
-      title={R2E-Gym: Procedural Environment Generation and Hybrid Verifiers for Scaling Open-Weights SWE Agents},
-      author={Jain Naman and Singh Jaskirat and Shetty Manish and Zheng Liang and Sen Koushik and Stoica Ion},
-      year={2025},
-      
+@article{jain2025r2e,
+  title={R2e-gym: Procedural environments and hybrid verifiers for scaling open-weights swe agents},
+  author={Jain, Naman and Singh, Jaskirat and Shetty, Manish and Zheng, Liang and Sen, Koushik and Stoica, Ion},
+  journal={arXiv preprint arXiv:2504.07164},
+  year={2025}
 }
 ```
