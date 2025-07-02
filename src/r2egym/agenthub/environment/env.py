@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from typing import Dict, Tuple, Any, Optional
 
 import gym
-
+import logging
 
 from r2egym.agenthub.action import Action
 from r2egym.agenthub.utils.log import get_logger
@@ -26,15 +26,26 @@ class EnvArgs:
 
 
 class RepoEnv(gym.Env):
-    def __init__(self, args: EnvArgs, logger=None):
+    def __init__(self,
+                 args: EnvArgs,
+                 logger=None,
+                 backend: str = "docker",
+                 verbose: bool = True,
+                 step_timeout: int = 90,
+                 reward_timeout: int = 300):
         # Get the logger
         if logger is None:
             self.logger = get_logger("RepoEnv")  # Pass the module name for clarity
         else:
             self.logger = logger
 
+        if not verbose:
+            self.logger.setLevel(logging.CRITICAL)  # Disable all possible logging
+            #logging.getLogger().setLevel(logging.CRITICAL)  # Disable root logger
+            #logging.disable(logging.CRITICAL)  # Disable all logging
+
         self.runtime = DockerRuntime(
-            ds=args.ds, command=["/bin/bash", "-l"], logger=self.logger
+            ds=args.ds, command=["/bin/bash", "-l"], logger=self.logger, backend=backend
         )
 
         self.args = args
@@ -42,6 +53,9 @@ class RepoEnv(gym.Env):
         self.observation = None
         self.state = None
         self.cmd_parser = ParseCommandBash()
+        self.backend = backend
+        self.step_timeout = step_timeout
+        self.reward_timeout = reward_timeout
         self.logger.info(
             f"Initialized Env: {self.runtime.repo_name} with image: {self.runtime.docker_image}"
         )
@@ -51,9 +65,15 @@ class RepoEnv(gym.Env):
         Resets the environment and returns an initial observation.
         """
         self.logger.info(f"Resetting RepoEnv ...")
+        # close the runtime
+        self.runtime.close()
         self.observation = "Environment reset"
         self.state = None
         self.done = False
+        # also just recreate env again with the same args
+        self.runtime = DockerRuntime(
+            ds=self.args.ds, command=["/bin/bash", "-l"], logger=self.logger, backend=self.backend
+        )
         return self.observation  # self.get_observation()
 
     def add_commands(self, cmd_files: list[str]):
@@ -144,12 +164,14 @@ class RepoEnv(gym.Env):
             obs = str(e)
             error = f"Exception occurred: {obs}"
             self.logger.error(error)
+            error_code = -1
+            bash_output = ""
         end_time = time.time()
         total_time = end_time - start_time
         return bash_output, error_code, total_time
 
     def step(
-        self, action: Action, timeout: int
+        self, action: Action, timeout: int = None,
     ) -> Tuple[Observation, int, bool, Dict[str, Any]]:
         """
         Executes an action (command) in the Docker container.
@@ -164,10 +186,12 @@ class RepoEnv(gym.Env):
             done: whether task is over
             info: additional information (e.g. debugging information)
         """
+        if not timeout:
+            timeout = self.step_timeout
         bash_output, error_code, total_time = self.run_action(action, timeout=timeout)
         self.observation = Observation(bash_output, error_code, action)
         reward = self.calculate_reward(self.observation)
-        if "finish" in action.function_name.lower():
+        if "finish" in action.function_name.lower() or "submit" in action.function_name.lower():
             self.done = True
         info = {"total_time": total_time}
         return self.observation, reward, self.done, info
@@ -193,6 +217,14 @@ class RepoEnv(gym.Env):
     def add_actions(self, actions: list[dict]) -> None:
         """add different tools from the agent here"""
         pass
+    
+    def compute_reward(self, timeout: int = None) -> float:
+        """
+        Compute the reward for the current state.
+        """
+        if not timeout:
+            timeout = self.reward_timeout
+        return self.runtime._calculate_reward(timeout=timeout)
 
     def calculate_reward(self, obs: Observation) -> int:
         """
