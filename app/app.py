@@ -13,7 +13,8 @@ app = Flask(__name__)
 # Navigate up from 'app/app.py' to reach the project root
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(BASE_DIR)
-TRAJ_DIR = os.path.join(BASE_DIR, "traj")
+TRAJ_DIR = os.path.join("../R2E-Gym", "deepswe")
+
 
 def get_jsonl_files():
     """Retrieve all JSONL files in the TRAJ_DIR directory."""
@@ -91,7 +92,6 @@ def logs(filename):
 
     logs = logs_dict[filename]
     if not logs:
-        print ("File not found or empty.")
         abort(404, description="File not found or empty.")
 
     # Group logs by docker_image

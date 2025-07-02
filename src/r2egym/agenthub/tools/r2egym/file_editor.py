@@ -469,9 +469,7 @@ class StrReplaceEditor:
         if old_str is None:
             raise EditorError("Missing required parameter 'old_str' for 'str_replace'.")
 
-        file_content = self.read_file(path).expandtabs()
-        old_str = old_str.expandtabs()
-        new_str = new_str.expandtabs() if new_str else ""
+        file_content = self.read_file(path)
         occurrences = file_content.count(old_str)
         if occurrences == 0:
             raise EditorError(
@@ -512,8 +510,7 @@ class StrReplaceEditor:
         if new_str is None:
             raise EditorError("Missing required parameter 'new_str' for 'insert'.")
 
-        old_text = self.read_file(path).expandtabs()
-        new_str = new_str.expandtabs()
+        old_text = self.read_file(path)
         file_text_lines = old_text.split("\n")
 
         if insert_line < 0 or insert_line > len(file_text_lines):
