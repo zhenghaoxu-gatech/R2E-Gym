@@ -8,6 +8,7 @@ import random
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import Mapping, Sequence
 from pydantic import BaseModel
 
 import litellm
@@ -53,6 +54,23 @@ class AgentArgs:
         return cls(**config)
 
 
+@dataclass
+class ResumeConfig:
+    """Configuration required to replay an existing conversation before resuming."""
+
+    messages: List[Dict[str, Any]]
+    mistake_index: Optional[int] = None
+    drop_last_assistant: bool = True
+
+
+@dataclass
+class _ResumeState:
+    """Internal container for resume state after replaying previous steps."""
+
+    history: List[Dict[str, Any]]
+    trajectory_steps: List[TrajectoryStep]
+    total_time_traj: float
+    done: bool
 ##############################################################################
 # Agent Class
 ##############################################################################
@@ -315,6 +333,201 @@ class Agent:
 
         return thought, action
 
+    def _normalize_message(self, message: Any) -> Any:
+        """Recursively convert dataset-backed mappings/sequences into plain Python types."""
+        if isinstance(message, Mapping):
+            return {k: self._normalize_message(v) for k, v in message.items()}
+        if isinstance(message, Sequence) and not isinstance(message, (str, bytes, bytearray)):
+            return [self._normalize_message(v) for v in message]
+        return message
+
+    def _determine_resume_cutoff(
+        self, messages: List[Dict[str, Any]], config: ResumeConfig
+    ) -> int:
+        """Determine how many messages to replay before handing control back to the agent."""
+        if config.mistake_index is not None:
+            return max(0, min(config.mistake_index, len(messages)))
+
+        if not config.drop_last_assistant:
+            return len(messages)
+
+        for idx in range(len(messages) - 1, -1, -1):
+            if messages[idx].get("role") == "assistant":
+                return idx
+        return len(messages)
+
+    def _extract_action_from_message(self, message: Dict[str, Any]) -> Tuple[str, Action]:
+        """Parse the assistant message into a thought and an Action object."""
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "\n".join(str(item) for item in content)
+        elif content is None:
+            content = ""
+
+        tool_calls = message.get("tool_calls") or []
+        if tool_calls:
+            try:
+                tool_call = tool_calls[0]
+                fn_info = tool_call.get("function", {})
+                fn_name = fn_info.get("name", "")
+                arguments = fn_info.get("arguments", {})
+                if isinstance(arguments, str):
+                    try:
+                        parameters = json.loads(arguments)
+                    except json.JSONDecodeError:
+                        self.logger.warning("Failed to json-decode function arguments in resume history; using raw string.")
+                        parameters = {"raw_arguments": arguments}
+                elif isinstance(arguments, Mapping):
+                    parameters = dict(arguments)
+                else:
+                    parameters = {}
+                action = Action(function_name=fn_name, parameters=parameters)
+            except Exception as exc:
+                self.logger.error(f"Failed to parse tool call while resuming history: {exc}")
+                action = Action(function_name="", parameters={})
+            thought, _ = self.parse_response(content)
+            return thought, action
+
+        function_call = message.get("function_call")
+        if function_call:
+            fn_name = function_call.get("name", "")
+            arguments = function_call.get("arguments", {})
+            if isinstance(arguments, str):
+                try:
+                    parameters = json.loads(arguments)
+                except json.JSONDecodeError:
+                    self.logger.warning("Failed to json-decode legacy function call arguments in resume history; using raw string.")
+                    parameters = {"raw_arguments": arguments}
+            elif isinstance(arguments, Mapping):
+                parameters = dict(arguments)
+            else:
+                parameters = {}
+            thought, _ = self.parse_response(content)
+            return thought, Action(function_name=fn_name, parameters=parameters)
+
+        if not isinstance(content, str):
+            content = str(content)
+        return self.parse_response(content)
+
+    def _append_stepcount_message(self, message: str) -> None:
+        """Append the step count reminder to the last message in history safely."""
+        if not self.history:
+            return
+        last_message = self.history[-1]
+        content = last_message.get("content", "")
+        if isinstance(content, list):
+            content = "\n".join(str(item) for item in content)
+        elif content is None:
+            content = ""
+        elif not isinstance(content, str):
+            content = str(content)
+        if content:
+            content = f"{content}\n{message}"
+        else:
+            content = message
+        last_message["content"] = content
+
+    def _bootstrap_from_messages(
+        self,
+        env: "RepoEnv",
+        config: ResumeConfig,
+        max_exec_time: int,
+        max_steps_absolute: int,
+    ) -> _ResumeState:
+        """Replay actions from prior messages to rebuild state before resuming."""
+
+        if not config.messages:
+            raise ValueError("Resume requested but no messages provided in resume configuration.")
+
+        normalized_messages = [
+            self._normalize_message(message) for message in config.messages
+        ]
+        cutoff = self._determine_resume_cutoff(normalized_messages, config)
+        messages_to_apply = normalized_messages[:cutoff]
+
+        history: List[Dict[str, Any]] = []
+        trajectory_steps: List[TrajectoryStep] = []
+        total_time_traj = 0.0
+        done = False
+
+        step_idx = 0
+        i = 0
+        while i < len(messages_to_apply):
+            message = messages_to_apply[i]
+            history.append(copy.deepcopy(message))
+
+            if message.get("role") == "assistant":
+                thought, action = self._extract_action_from_message(message)
+
+                if not action.function_name:
+                    self.logger.warning(
+                        "Encountered assistant message without an actionable function while resuming; skipping execution."
+                    )
+                    i += 1
+                    continue
+
+                if step_idx >= max_steps_absolute:
+                    raise ValueError(
+                        "Resume history consumes max_steps_absolute; cannot resume further."
+                    )
+
+                try:
+                    obs, reward, done, info = env.step(action, timeout=max_exec_time)
+                except Exception as exc:
+                    self.logger.error(
+                        f"Failed to replay action '{action.function_name}' from resume history: {exc}"
+                    )
+                    raise
+
+                info = info or {}
+                env_time = info.get("total_time", 0.0)
+                total_step_time = env_time
+                total_time_traj += total_step_time
+
+                trajectory_steps.append(
+                    TrajectoryStep(
+                        step_idx=step_idx,
+                        thought=thought,
+                        action=action.to_xml_string(),
+                        observation=str(obs),
+                        done=done,
+                        info=info,
+                        token_usage_prompt=0,
+                        token_usage_completion=0,
+                        token_usage_total=0,
+                        llm_exec_time=0.0,
+                        env_exec_time=env_time,
+                        total_step_time=total_step_time,
+                        total_time_traj=total_time_traj,
+                        step_count=step_idx + 1,
+                    )
+                )
+                step_idx += 1
+
+                next_idx = i + 1
+                if next_idx < len(messages_to_apply):
+                    next_message = messages_to_apply[next_idx]
+                    if next_message.get("role") in {"user", "tool"}:
+                        dataset_obs = next_message.get("content", "")
+                        if isinstance(dataset_obs, list):
+                            dataset_obs = "\n".join(str(item) for item in dataset_obs)
+                        actual_obs = str(obs)
+                        if dataset_obs and actual_obs and dataset_obs.strip() != actual_obs.strip():
+                            self.logger.debug(
+                                "Resume history observation mismatch detected; proceeding with environment output."
+                            )
+                else:
+                    history.append({"role": "user", "content": str(obs)})
+
+            i += 1
+
+        return _ResumeState(
+            history=history,
+            trajectory_steps=trajectory_steps,
+            total_time_traj=total_time_traj,
+            done=done,
+        )
+
     def run(
         self,
         env: "RepoEnv",  # env: RepoEnv
@@ -332,6 +545,7 @@ class Agent:
         temperature=0,
         # additional metadata e.g. for hints / additional inputs etc
         metadata: Optional[Dict[str, Any]] = {},
+        resume_config: Optional[ResumeConfig] = None,
         scaffold: str = "r2egym",
     ):
         assert scaffold in ["r2egym", "openhands", "sweagent"], "Scaffold must be either r2egym or openhands or sweagent"
@@ -388,18 +602,45 @@ class Agent:
             user_prompt = f"{demo}\n\n{user_prompt}"
         self.logger.info(f"User Prompt with demo: {user_prompt}")
 
-        # initialize the history
-        self.history = [
+        base_history = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ]
 
-        # initialize the parameters
         obs = None
         done = False
-        step_count = 0
-        total_time_traj = 0
-        self.trajectory_steps: List[TrajectoryStep] = []
+        exit_reason = "agent"
+        total_time_traj = 0.0
+
+        if resume_config:
+            try:
+                resume_state = self._bootstrap_from_messages(
+                    env=env,
+                    config=resume_config,
+                    max_exec_time=max_exec_time,
+                    max_steps_absolute=max_steps_absolute,
+                )
+            except Exception as exc:
+                self.logger.error(f"Failed to replay resume history: {exc}")
+                raise
+
+            history = resume_state.history or copy.deepcopy(base_history)
+            if not history:
+                history = copy.deepcopy(base_history)
+            self.history = history
+            self.trajectory_steps = resume_state.trajectory_steps
+            total_time_traj = resume_state.total_time_traj
+            step_count = len(self.trajectory_steps)
+            done = resume_state.done
+            if done:
+                exit_reason = "resume_history_complete"
+                self.logger.warning(
+                    "Environment concluded during resume history replay; skipping additional agent steps."
+                )
+        else:
+            self.history = copy.deepcopy(base_history)
+            self.trajectory_steps: List[TrajectoryStep] = []
+            step_count = 0
 
         # agent loop
         while not done:
@@ -411,9 +652,7 @@ class Agent:
                 stepcount_message = f"Steps Remaining: {steps_remaining}"
             else:
                 stepcount_message = "You have reached the maximum number of steps. Please submit your answer NOW."
-            self.history[-1][
-                "content"
-            ] += f"\n{stepcount_message}"  # postpend stepcount message
+            self._append_stepcount_message(stepcount_message)
             self.logger.info(stepcount_message)
 
             # Query the LLM

@@ -14,7 +14,7 @@ import docker
 
 from r2egym.agenthub.runtime.docker import DockerRuntime
 from r2egym.agenthub.environment.env import EnvArgs, RepoEnv
-from r2egym.agenthub.agent.agent import AgentArgs, Agent
+from r2egym.agenthub.agent.agent import AgentArgs, Agent, ResumeConfig
 
 from r2egym.docker_bash_utils.docker_list_tags import fetch_docker_tags
 from r2egym.agenthub.utils.log import get_logger
@@ -131,6 +131,7 @@ def run_agent_with_restarts(
     max_iterations: int = 1,
     scaffold: str = "r2egym",
     max_tokens: int = 65536,
+    resume_config: Optional[ResumeConfig] = None,
 ):
     """
     Iterative eval protocol:
@@ -172,6 +173,7 @@ def run_agent_with_restarts(
                 use_fn_calling=use_fn_calling,
                 scaffold=scaffold,
                 max_token_limit=max_tokens,
+                resume_config=resume_config,
             )
             # remove reproduce.py
             # env.runtime.run('rm reproduce_issue.py')
@@ -201,6 +203,7 @@ def runagent(
     max_iterations: int = 1,
     scaffold: str = "r2egym",
     max_tokens: int = 65536,
+    resume_from_history: bool = False,
 ) -> Optional[str]:
     """
     Runs the editagent agent on a specified Docker image.
@@ -246,6 +249,23 @@ def runagent(
     # Initialize the agent
     agent = Agent(name="EditAgent", args=agent_args, logger=logger)
 
+    resume_config = None
+    if resume_from_history:
+        messages = ds.get("messages")
+        if messages:
+            resume_config = ResumeConfig(
+                messages=list(messages),
+                mistake_index=ds.get("mistake_index"),
+                drop_last_assistant=True,
+            )
+            logger.info(
+                "Resume from history enabled with %s prior messages (mistake_index=%s).",
+                len(resume_config.messages),
+                resume_config.mistake_index,
+            )
+        else:
+            logger.warning("Resume from history requested but no messages found in dataset entry; continuing without resume.")
+
     # run agent editagent
     try:
         trajectory = run_agent_with_restarts(
@@ -259,6 +279,7 @@ def runagent(
             max_iterations=max_iterations,
             scaffold=scaffold,
             max_tokens=max_tokens,
+            resume_config=resume_config,
         )
     except Exception as e:
         logger.error(
@@ -309,6 +330,7 @@ def runagent_multiple(
     scaffold: str = "r2egym",
     prepull_images: bool = False,
     max_tokens: int = 65536,
+    resume_from_history: bool = False,
 ):
     """
     Runs the editagent agent on the first k Docker images.
@@ -424,6 +446,7 @@ def runagent_multiple(
                 max_iterations=max_iterations,
                 scaffold=scaffold,
                 max_tokens=max_tokens,
+                resume_from_history=resume_from_history,
             ): ds_entry[
                 "docker_image"
             ]  # <-- store the docker_image from ds_entry here
