@@ -326,10 +326,10 @@ def runagent_multiple(
     ds = load_dataset(dataset, split=split)
     logger.info(f"{len(ds)}, {k}, {start_idx}")
     # shuffle the dataset
-    ds = ds.shuffle(seed=42)
+    # ds = ds.shuffle(seed=42)
 
     # get selected idxs
-    selected_idx = range(start_idx, start_idx + k)
+    selected_idx = range(start_idx, min(start_idx + k, len(ds)))
     ds_selected = [ds[i] for i in selected_idx]
 
     # print ds_selected stats
@@ -353,20 +353,29 @@ def runagent_multiple(
         if jsonl_file.exists():
             with open(jsonl_file) as f:
                 existing_dockers = []
+                existing_docker_status = {}
                 for line in f.readlines():
                     try:
+                        traj = Trajectory.load_from_model_dump_json(line)
+                        existing_docker = traj.ds[
+                            "docker_image"
+                        ]
+                        # print('>>>>>>>>>>', existing_docker)
                         existing_dockers.append(
-                            Trajectory.load_from_model_dump_json(line).ds[
-                                "docker_image"
-                            ]
+                            existing_docker
                         )
+                        # print('>>>>>>>>>>', traj.exit_reason)
+                        existing_docker_status[existing_docker] = traj.exit_reason
                     except:
                         print("error in jsonl file")
 
             ds_selected = [
                 ds_entry
                 for ds_entry in ds_selected
-                if ds_entry["docker_image"] not in existing_dockers
+                if (
+                    (ds_entry["docker_image"] not in existing_dockers) or 
+                    (existing_docker_status[ds_entry["docker_image"]] == "llm_query_error")
+                )
             ]
 
     if skip_existing:

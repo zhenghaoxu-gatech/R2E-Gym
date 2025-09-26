@@ -4,6 +4,7 @@ import copy
 import yaml
 import json
 import time
+import random
 from pathlib import Path
 from dataclasses import dataclass, asdict
 from typing import Any, Dict, List, Optional, Tuple
@@ -79,7 +80,7 @@ class Agent:
         self.command_files = args.command_files
         self.other_args = args.other_args or {}
         self.logger.info(f"Initialized Agent: {name} with LLM: {args.llm_name}")
-        self.max_retries = self.other_args.get("max_retries", 5)
+        self.max_retries = self.other_args.get("max_retries", 100)
         self.llm_timeout = self.other_args.get("timeout", 3000)
 
 
@@ -215,10 +216,19 @@ class Agent:
             except Exception as e:
                 self.logger.error(f"LLM query failed @ {retries}: {e}")
                 retries += 1
-                if "RateLimitError" in str(e):
-                    time.sleep(60)
                 if retries >= self.max_retries:
                     raise e
+                
+                if "RateLimitError" in str(e):
+                    time.sleep(60)
+                else:
+                    # Exponential backoff with jitter, max 20 seconds
+                    base_delay = random.uniform(0.5, 1.5)  # Random base between 0.5-1.5 seconds
+                    exponential_delay = base_delay * (2 ** (retries - 1))
+                    sleep_time = min(exponential_delay, 20.0)  # Cap at 20 seconds
+                    
+                    self.logger.info(f"Retrying in {sleep_time:.2f} seconds (attempt {retries}/{self.max_retries})")
+                    time.sleep(sleep_time)
 
         # End timer, calculate total execution time, and include in response
         exec_time = time.time() - start_time
@@ -243,7 +253,11 @@ class Agent:
         if match_thought:
             thought = match_thought.group(1)  # The entire <think>...</think> block
         else:
-            thought = ""
+            # Fallback: treat everything before the first action block as the thought
+            if match_action:
+                thought = response[: match_action.start()]
+            else:
+                thought = response
         if match_action:
             action = match_action.group(1)  # The entire <function=...></function> block
         else:
@@ -329,6 +343,7 @@ class Agent:
         # if self.llm_name is not gpt or sonnet, disable fn calling
         support_fn_calling = (
             "gpt" in self.llm_name
+            or "opus" in self.llm_name
             or "sonnet" in self.llm_name
             or "o3" in self.llm_name
             or "o4" in self.llm_name

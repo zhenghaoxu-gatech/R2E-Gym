@@ -1,4 +1,49 @@
 {
+    "zhenghaoxu/R2EGym-SFT-Trajs-s20": {
+        "hf_hub_url": "zhenghaoxu/R2E-Gym-Trajs",
+        "formatting": "sharegpt",
+        "split": "s20",
+        "columns": {
+            "messages": "messages"
+        },
+        "tags": {
+            "role_tag": "role",
+            "content_tag": "content",
+            "user_tag": "user",
+            "assistant_tag": "assistant",
+            "system_tag": "system"
+        }
+    },
+    "zhenghaoxu/R2EGym-SFT-Trajs-s30": {
+        "hf_hub_url": "zhenghaoxu/R2E-Gym-Trajs",
+        "formatting": "sharegpt",
+        "split": "s30",
+        "columns": {
+            "messages": "messages"
+        },
+        "tags": {
+            "role_tag": "role",
+            "content_tag": "content",
+            "user_tag": "user",
+            "assistant_tag": "assistant",
+            "system_tag": "system"
+        }
+    },
+    "zhenghaoxu/R2EGym-SFT-Trajs-s40": {
+        "hf_hub_url": "zhenghaoxu/R2E-Gym-Trajs",
+        "formatting": "sharegpt",
+        "split": "s40",
+        "columns": {
+            "messages": "messages"
+        },
+        "tags": {
+            "role_tag": "role",
+            "content_tag": "content",
+            "user_tag": "user",
+            "assistant_tag": "assistant",
+            "system_tag": "system"
+        }
+    },
     "R2E-Gym/R2EGym-SFT-Trajectories": {
         "hf_hub_url": "R2E-Gym/R2EGym-SFT-Trajectories",
         "formatting": "sharegpt",

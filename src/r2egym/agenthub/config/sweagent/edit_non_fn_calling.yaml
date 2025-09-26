@@ -90,5 +90,5 @@ command_files:
 llm_name: "gpt-4o"
 demo_file: "./src/r2egym/agenthub/config/localizer-demo"
 other_args:
-  max_retries: 3
+  max_retries: 15
   timeout: 120
